@@ -26,7 +26,8 @@ adds two guards and nothing else:
    prints enrolled by other software such as Windows cannot be removed through Linux;
 2. `clear_storage` (wipe all prints on the chip) is refused unless `FP_ELAN_0C4C_ALLOW_CLEAR=1` is set.
 
-Both compile on every version in `data/versions.tsv`; neither has yet been exercised on hardware.
+Both compile on every version in `data/versions.tsv`. The patched driver has run on hardware (listing and
+verifying prints) but neither refusal has yet been triggered on a real sensor.
 
 ## Review record
 

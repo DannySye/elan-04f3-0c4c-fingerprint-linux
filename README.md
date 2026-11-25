@@ -76,7 +76,7 @@ Details: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
 | Laptop | Distro | libfprint | Result |
 |---|---|---|---|
-| HP Spectre x360 14-ea0xxx | Fedora 45 | 1.94.100 | enrol, verify, `sudo`, lock screen and GDM login worked |
+| HP Spectre x360 14-ea0xxx | Fedora 45 (SELinux enforcing) | 1.94.100 | via this tool's `install`: device listed, enrolled finger verifies. Earlier, with the same driver built as a local RPM: enrol, verify, `sudo`, lock screen and GDM login |
 
 Everything else is **build-tested only**: the driver compiles against libfprint 1.94.0, 1.94.2 and
 1.94.4 through 1.94.10 (see [data/versions.tsv](data/versions.tsv) and [docs/TESTED.md](docs/TESTED.md)).
@@ -87,19 +87,19 @@ same as tested. **Please report your results**: [docs/REPORTING.md](docs/REPORTI
 
 ## What is and is not verified
 
-Verified on real hardware (Fedora 45, libfprint 1.94.100, fprintd 1.94.5), using the **unmodified**
-community driver built into a local RPM:
+Verified on real hardware (Fedora 45, libfprint 1.94.100, fprintd 1.94.5):
 
-* sensor detection, enrolment, verification, rejection of a non-enrolled finger;
-* `sudo`, lock screen and login through `pam_fprintd`.
+* with the **unmodified** community driver built into a local RPM: sensor detection, 8-scan enrolment,
+  verification, rejection of a non-enrolled finger, `sudo`, lock screen and login through `pam_fprintd`;
+* with **this tool's `install`** (systemd drop-in + `/opt`, SELinux enforcing, safety patch included):
+  `fprintd` lists the sensor and the previously enrolled finger verifies. SELinux labelling by the tool
+  worked and produced no denials.
 
 **Not yet verified on hardware:**
 
-* the **systemd drop-in install path** this tool uses (`/opt` + `LD_LIBRARY_PATH`), including the SELinux
-  labelling it performs on Fedora/RHEL. It builds and the logic is unit-tested, but it has not yet been
-  run end to end;
-* the **safety patch** (delete and clear-storage guards). It compiles on every listed version and its text
-  is checked by the tests, but no real delete/enrol cycle has been run with it;
+* the safety patch's **guards firing**: the patched driver runs normally, but no delete or clear-storage
+  request has been sent to it, so the refusals are checked only by compiling and by text tests;
+* a fresh enrolment through the tool-built library (enrolment was verified with the RPM build);
 * every distribution other than Fedora. The `apt` dependency list is verified by CI (it builds libfprint
   1.94.0-1.94.100 on Ubuntu 24.04), but nothing has been *installed or run* there. The `pacman` and
   `zypper` lists are marked `UNTESTED` in the tool's output;
