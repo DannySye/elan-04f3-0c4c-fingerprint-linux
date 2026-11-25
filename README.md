@@ -1,7 +1,8 @@
-# fprint-elan-0c4c
+# ELAN 04f3:0c4c fingerprint reader on Linux (HP ENVY x360 / Spectre x360)
 
-Fingerprint login for laptops with the **ELAN `04f3:0c4c`** sensor, on any Linux distribution that uses
-`fprintd` + `libfprint`.
+`fprint-elan-0c4c` enables fingerprint login for laptops with the **ELAN `04f3:0c4c`** fingerprint sensor on
+Linux distributions that use `fprintd` + `libfprint` (Fedora, Ubuntu, Debian, Arch, openSUSE and others;
+[only Fedora is hardware-tested](#tested)).
 
 Windows calls this device **"ELAN WBF Fingerprint Sensor"**. Linux shows it as `ELAN:ARM-M4`:
 
@@ -14,14 +15,21 @@ Out of the box, `fprintd-list` says *"No devices available"* because libfprint h
 sensor. This tool builds libfprint **with a community driver added** and points `fprintd` at it, without
 replacing any of your distribution's files.
 
+**Is this your problem?**
+
+* fingerprint reader not working or not detected on an HP ENVY x360, ENVY 17 or Spectre x360 under Linux
+* `fprintd-list` or `fprintd-enroll` reports `No devices available`
+* `lsusb` shows `04f3:0c4c Elan Microelectronics Corp. ELAN:ARM-M4`
+* Windows Device Manager shows `ELAN WBF Fingerprint Sensor` (`USB\VID_04F3&PID_0C4C`)
+
 > **Status: alpha (0.1.0).** Verified on one laptop (see [Tested](#tested)). Read
 > [What is and is not verified](#what-is-and-is-not-verified) before installing.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/DannySye/fprint-elan-0c4c.git
-cd fprint-elan-0c4c
+git clone https://github.com/DannySye/elan-04f3-0c4c-fingerprint-linux.git
+cd elan-04f3-0c4c-fingerprint-linux
 
 ./bin/fprint-elan-0c4c doctor          # read-only: is this tool for you? what is missing?
 sudo ./bin/fprint-elan-0c4c install    # builds into /opt/fprint-elan-0c4c, restarts fprintd
@@ -82,8 +90,35 @@ Everything else is **build-tested only**: the driver compiles against libfprint 
 1.94.4 through 1.94.10 (see [data/versions.tsv](data/versions.tsv) and [docs/TESTED.md](docs/TESTED.md)).
 libfprint 1.92.x is not supported (its driver API is too old).
 
-HP Envy x360 owners have reported the same sensor ID in the upstream issue tracker, but that is not the
-same as tested. **Please report your results**: [docs/REPORTING.md](docs/REPORTING.md).
+## Laptops reported with this sensor
+
+Found by a web search in November 2026. Apart from the first row, **nobody has tested this tool on them**.
+"Reported" describes what the source says, which may involve a different driver. The list is incomplete:
+check your own machine with `lsusb | grep 04f3:0c4c`.
+
+| HP model | Source | Reported |
+|---|---|---|
+| Spectre x360 14-ea0xxx | this project | works with this tool |
+| Spectre x360 14" (2020) | [depau/elanpoc](https://github.com/depau/elanpoc) | proof of concept |
+| ENVY x360 15-ee0477ng | [libfprint #281](https://gitlab.freedesktop.org/libfprint/libfprint/-/work_items/281) | support request |
+| ENVY 17m-cg0013dx | [Manjaro forum](https://forum.manjaro.org/t/hp-17m-cg0013dx-can-not-get-fingerprint-sensor-working/32819) (2020) | not working then |
+| ENVY Laptop 17m-cg1xxx | [Windows driver listing](https://www.driveridentifier.com/scan/elan-wbf-fingerprint-sensor-driver/download/559268479/72BD75CF91EC4F788F46E395B6D6782E/USB/VID_04F3&PID_0C4C) | Windows driver only (seen in a search summary, page not opened) |
+| ENVY notebook (model not given) | [J. Kinzig's blog](https://johanneskinzig.com/fingerprint-authentication-with-ubuntu-2404-on-my-hp-envy-notebook.html) | works on Ubuntu 24.04 with `elanmoc2` |
+| ENVY x360, ENVY Laptop, Spectre x360 (names truncated) | [linux-hardware.org](https://linux-hardware.org/?id=usb%3A04f3-0c4c), [bsd-hardware.info](https://bsd-hardware.info/?id=usb%3A04f3-0c4c) | mostly not working without a patched driver |
+
+Only HP models turned up, but only part of the hardware database was read, so other brands are possible.
+**Please report your results**: [docs/REPORTING.md](docs/REPORTING.md).
+
+## Alternative: the `elanmoc2` driver
+
+This is not the only driver for the sensor. [depau](https://github.com/depau)'s `elanmoc2`
+(libfprint merge request [!330](https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/330))
+has been reported working by several users, and others package it, for example a
+[Debian/Ubuntu fork](https://github.com/Greek64/libfprint-elanmoc2-deb) and an
+[Arch AUR package](https://aur.archlinux.org/packages/libfprint-elanmoc2-newdrvs-git). If this tool does not
+work for you, try it. This project builds a different driver (see [NOTICE.md](NOTICE.md)), adds guards against
+deleting prints made by Windows, and leaves the system libfprint in place. The two have not been compared, and
+`elanmoc2` was not checked for similar guards.
 
 ## What is and is not verified
 
