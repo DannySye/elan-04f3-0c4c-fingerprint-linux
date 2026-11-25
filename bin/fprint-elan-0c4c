@@ -88,7 +88,7 @@ detect_pm() {
 deps_command() {
   case "$(detect_pm)" in
     dnf)    echo "sudo dnf install -y git patch meson ninja-build gcc gcc-c++ pkgconf-pkg-config glib2-devel libgusb-devel libusb1-devel nss-devel pixman-devel openssl-devel cairo-devel gobject-introspection-devel libgudev-devel systemd-devel" ;;
-    apt)    echo "sudo apt install -y git patch build-essential meson ninja-build pkg-config libglib2.0-dev libgusb-dev libusb-1.0-0-dev libnss3-dev libpixman-1-dev libssl-dev libcairo2-dev libgirepository1.0-dev libgudev-1.0-dev   # UNTESTED package list" ;;
+    apt)    echo "sudo apt install -y git patch build-essential meson ninja-build pkg-config libglib2.0-dev libgusb-dev libusb-1.0-0-dev libnss3-dev libpixman-1-dev libssl-dev libcairo2-dev libgirepository1.0-dev libgudev-1.0-dev   # builds verified in CI on Ubuntu 24.04" ;;
     pacman) echo "sudo pacman -S --needed git patch base-devel meson ninja glib2 libgusb libusb nss pixman openssl cairo gobject-introspection libgudev   # UNTESTED package list" ;;
     zypper) echo "sudo zypper install -y git patch gcc gcc-c++ meson ninja pkgconf-pkg-config glib2-devel libgusb-devel libusb-1_0-devel mozilla-nss-devel libpixman-1-0-devel libopenssl-devel cairo-devel gobject-introspection-devel libgudev-1_0-devel   # UNTESTED package list" ;;
     *)      echo "# unknown distribution: install git, patch, meson, ninja, a C/C++ compiler and the -devel packages for glib2, gusb, libusb-1.0, nss, pixman, openssl, cairo, gobject-introspection and gudev" ;;

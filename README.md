@@ -100,8 +100,9 @@ community driver built into a local RPM:
   run end to end;
 * the **safety patch** (delete and clear-storage guards). It compiles on every listed version and its text
   is checked by the tests, but no real delete/enrol cycle has been run with it;
-* every distribution other than Fedora. The package lists for `apt`, `pacman` and `zypper` are marked
-  `UNTESTED` in the tool's output and the CI job exercises the `apt` one;
+* every distribution other than Fedora. The `apt` dependency list is verified by CI (it builds libfprint
+  1.94.0-1.94.100 on Ubuntu 24.04), but nothing has been *installed or run* there. The `pacman` and
+  `zypper` lists are marked `UNTESTED` in the tool's output;
 * any libfprint version other than 1.94.100 at runtime.
 
 ## Safety and trust
