@@ -47,6 +47,14 @@ d="$(mktemp -d)"; cp -r "$ROOT/tests/fixtures/old/." "$d/"; ( wire_driver "$d" )
 check "old layout: driver listed twice in meson.build" "2" "$(grep -c "'elanmoc_0c4c'," "$d/meson.build")"
 rm -rf "$d"
 
+# tests/examples are dropped when unneeded, kept when the library includes a header generated there
+d="$(mktemp -d)"; cp -r "$ROOT/tests/fixtures/old/." "$d/"; ( wire_driver "$d" ) >/dev/null 2>&1
+check "tests/examples subdirs removed when unneeded" "0" "$(grep -cE "subdir\('(tests|examples)'\)" "$d/meson.build")"
+rm -rf "$d"
+d="$(mktemp -d)"; cp -r "$ROOT/tests/fixtures/new/." "$d/"; ( wire_driver "$d" ) >/dev/null 2>&1
+check "tests/examples subdirs kept when the library needs them" "2" "$(grep -cE "subdir\('(tests|examples)'\)" "$d/meson.build")"
+rm -rf "$d"
+
 # --- safety patch is really applied to the copied driver -------------------
 d="$(mktemp -d)"; cp -r "$ROOT/tests/fixtures/new/." "$d/"; ( wire_driver "$d" ) >/dev/null 2>&1
 grep -q 'not enrolled by libfprint' "$d/libfprint/drivers/elanmoc_0c4c/elanmoc_0c4c.c"
@@ -57,7 +65,7 @@ rm -rf "$d"
 
 # --- install refuses dangerous prefixes -------------------------------------
 for bad in / /usr /usr/local /etc /home/me /opt relative/path "/opt/x y" "/opt/../usr"; do
-  out="$( (validate_prefix "$bad") 2>&1 )"; rc=$?
+  (validate_prefix "$bad") >/dev/null 2>&1; rc=$?
   check "prefix '$bad' refused" "1" "$rc"
 done
 (validate_prefix /opt/fprint-elan-0c4c) >/dev/null 2>&1

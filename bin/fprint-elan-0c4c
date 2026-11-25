@@ -223,6 +223,17 @@ def top(t):
 
 edit(src + "/libfprint/meson.build", sources)
 edit(src + "/meson.build", top)
+
+# libfprint's own test suite and example programs are never needed here, and
+# configuring the tests can fail on systems without their Python/umockdev
+# dependencies (exit status 77). Examples use a variable the tests define, so
+# both go together.
+# 1.94.100 generates a header in tests/ that the library itself includes, so
+# the directories stay for versions that reference it.
+mb = src + "/meson.build"
+t = open(mb).read()
+if "tests/fpi-test-emulation.h" not in open(src + "/libfprint/fpi-device.c").read():
+    open(mb, "w").write(re.sub(r"^[ \t]*subdir\('(tests|examples)'\)[ \t]*\n", "", t, flags=re.M))
 PYEOF2
   grep -q "elanmoc_0c4c" "$src/libfprint/meson.build" && grep -q "elanmoc_0c4c" "$src/meson.build" \
     || die "failed to register the driver in the build files"
@@ -258,7 +269,10 @@ build_into() {
   done
   meson setup "$work/_b" "$src" --prefix="$prefix" --libdir=lib "${opts[@]}" \
     >"$work/meson.log" 2>&1 \
-    || { tail -n 25 "$work/meson.log" >&2; die "meson configure failed"; }
+    || { tail -n 25 "$work/meson.log" >&2
+         grep -q 'failed with status 77' "$work/meson.log" \
+           && info "libfprint's test discovery needs python3-gobject/python3-cairo and umockdev; install them (or use a version <= 1.94.10)"
+         die "meson configure failed"; }
   info "compiling"
   meson compile -C "$work/_b" >"$work/build.log" 2>&1 \
     || { tail -n 25 "$work/build.log" >&2; die "build failed"; }

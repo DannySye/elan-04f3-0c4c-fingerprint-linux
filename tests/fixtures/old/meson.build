@@ -8,3 +8,6 @@ endian_independent_drivers = [
     'elanmoc',
     'etes603',
 ]
+subdir('libfprint')
+subdir('tests')
+subdir('examples')
