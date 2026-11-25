@@ -1,0 +1,14 @@
+# libfprint version<TAB>commit the tag vVERSION must resolve to<TAB>status
+#   hardware-tested : enrolled and verified on a real sensor
+#   build-tested    : compiles with this tool; NOT yet run on hardware
+# Add a version only after the corresponding test. See docs/TESTED.md.
+1.94.0	909865ed8de2a603fb20e9d26fe91be88ff66dce	build-tested
+1.94.2	5e4bb268012f4051fc72578e6a1866c729cd8a2f	build-tested
+1.94.4	f20b8bc3112d1ae240df79fd9b648ded99b74e06	build-tested
+1.94.5	86961a9429d589c387da37351fd6b4ff3caf67ea	build-tested
+1.94.6	135a015b6a780e85f828a1bb9a62a2ee0c72e04b	build-tested
+1.94.7	bebe8565cd7e2c89c0b0c5e6ee7353b80d6a51e1	build-tested
+1.94.8	e57bab2f1ef3583158d2e6e2b5bb4182629ebe35	build-tested
+1.94.9	dc8b05f0a30e93174e861977cede8427c22f8f76	build-tested
+1.94.10	0c97a47d8ef405cd577b87058c1e89cae9d242e7	build-tested
+1.94.100	80a4b5ec612892c5c056c48dddaa561452cf37ec	hardware-tested

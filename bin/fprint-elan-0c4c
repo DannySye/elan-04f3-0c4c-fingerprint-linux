@@ -1,0 +1,502 @@
+#!/usr/bin/env bash
+# fprint-elan-0c4c - add fingerprint support for the ELAN 04f3:0c4c sensor
+# (Windows name: "ELAN WBF Fingerprint Sensor") to an existing libfprint.
+#
+# Copyright (C) 2026 fprint-elan-0c4c contributors
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# The driver this tool builds is NOT written by this project; see NOTICE.md.
+set -euo pipefail
+
+TOOL_VERSION="0.1.0"
+TOOL_NAME="fprint-elan-0c4c"
+USB_ID_VENDOR="04f3"
+USB_ID_PRODUCT="0c4c"
+UPSTREAM_GIT="${FPRINT_ELAN_UPSTREAM_GIT:-https://gitlab.freedesktop.org/libfprint/libfprint.git}"
+
+PREFIX_DEFAULT="/opt/${TOOL_NAME}"
+CONF_FILE="/etc/${TOOL_NAME}.conf"
+DROPIN_DIR="/etc/systemd/system/fprintd.service.d"
+DROPIN_FILE="${DROPIN_DIR}/50-${TOOL_NAME}.conf"
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(dirname "$(dirname "$SELF")")"
+DATA_DIR="${FPRINT_ELAN_DATA_DIR:-$ROOT_DIR}"
+
+WORK_DIR=""
+cleanup() { [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]] && rm -rf "$WORK_DIR"; return 0; }
+trap cleanup EXIT
+
+# ---------------------------------------------------------------- output ----
+if [[ -t 1 ]]; then
+  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_OFF=$'\033[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_OFF=""
+fi
+ok()   { printf '%s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+warn() { printf '%s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*" >&2; }
+fail() { printf '%s[FAIL]%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; }
+info() { printf '       %s\n' "$*"; }
+die()  { fail "$*"; exit 1; }
+
+# ------------------------------------------------------------- utilities ----
+need_root() {
+  [[ ${EUID} -eq 0 ]] || die "this command changes system files; run it with sudo"
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Reduce a distro package version to the upstream libfprint version.
+#   1:1.94.7+tod1-0ubuntu1 -> 1.94.7    1.94.100-1.fc45 -> 1.94.100
+normalize_version() {
+  local v="$1"
+  v="${v#*:}"            # strip Debian epoch
+  v="${v%%[-+~_]*}"      # strip packaging suffixes
+  printf '%s' "$v"
+}
+
+# True if the 04f3:0c4c device is present on the USB bus.
+device_present() {
+  local d
+  for d in /sys/bus/usb/devices/*; do
+    [[ -r "$d/idVendor" && -r "$d/idProduct" ]] || continue
+    if [[ "$(<"$d/idVendor")" == "$USB_ID_VENDOR" && "$(<"$d/idProduct")" == "$USB_ID_PRODUCT" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_pm() {
+  local id=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    id="$(. /etc/os-release && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")"
+  fi
+  case " $id " in
+    *" fedora "*|*" rhel "*|*" centos "*) echo dnf ;;
+    *" debian "*|*" ubuntu "*)            echo apt ;;
+    *" arch "*)                           echo pacman ;;
+    *" suse "*|*" opensuse"*)             echo zypper ;;
+    *) if have dnf; then echo dnf; elif have apt-get; then echo apt
+       elif have pacman; then echo pacman; elif have zypper; then echo zypper
+       else echo unknown; fi ;;
+  esac
+}
+
+# Print the install command for the build dependencies.
+deps_command() {
+  case "$(detect_pm)" in
+    dnf)    echo "sudo dnf install -y git patch meson ninja-build gcc gcc-c++ pkgconf-pkg-config glib2-devel libgusb-devel libusb1-devel nss-devel pixman-devel openssl-devel cairo-devel gobject-introspection-devel libgudev-devel systemd-devel" ;;
+    apt)    echo "sudo apt install -y git patch build-essential meson ninja-build pkg-config libglib2.0-dev libgusb-dev libusb-1.0-0-dev libnss3-dev libpixman-1-dev libssl-dev libcairo2-dev libgirepository1.0-dev libgudev-1.0-dev   # UNTESTED package list" ;;
+    pacman) echo "sudo pacman -S --needed git patch base-devel meson ninja glib2 libgusb libusb nss pixman openssl cairo gobject-introspection libgudev   # UNTESTED package list" ;;
+    zypper) echo "sudo zypper install -y git patch gcc gcc-c++ meson ninja pkgconf-pkg-config glib2-devel libgusb-devel libusb-1_0-devel mozilla-nss-devel libpixman-1-0-devel libopenssl-devel cairo-devel gobject-introspection-devel libgudev-1_0-devel   # UNTESTED package list" ;;
+    *)      echo "# unknown distribution: install git, patch, meson, ninja, a C/C++ compiler and the -devel packages for glib2, gusb, libusb-1.0, nss, pixman, openssl, cairo, gobject-introspection and gudev" ;;
+  esac
+}
+
+missing_tools() {
+  local t miss=()
+  for t in git patch meson ninja gcc c++ pkg-config; do
+    have "$t" || { [[ "$t" == ninja ]] && have ninja-build && continue; miss+=("$t"); }
+  done
+  # distros without a pkg-config binary name often ship pkgconf
+  if ((${#miss[@]})) && [[ " ${miss[*]} " == *" pkg-config "* ]] && have pkgconf; then
+    miss=("${miss[@]/pkg-config/}")
+  fi
+  printf '%s\n' "${miss[@]}" | sed '/^$/d' | paste -sd' ' -
+}
+
+# Path of the libfprint shared library the system currently uses.
+system_lib() {
+  local p=""
+  if have ldconfig; then
+    p="$(ldconfig -p 2>/dev/null | awk '/libfprint-2\.so\.2 /{print $NF; exit}')"
+  fi
+  [[ -n "$p" ]] && readlink -f "$p"
+}
+
+# Upstream libfprint version installed through the package manager.
+system_libfprint_version() {
+  local v=""
+  if have rpm && rpm -q libfprint >/dev/null 2>&1; then
+    v="$(rpm -q --qf '%{VERSION}' libfprint)"
+  elif have rpm && rpm -q libfprint-2-2 >/dev/null 2>&1; then
+    v="$(rpm -q --qf '%{VERSION}' libfprint-2-2)"
+  elif have dpkg-query && dpkg-query -W -f='${Version}' libfprint-2-2 >/dev/null 2>&1; then
+    v="$(dpkg-query -W -f='${Version}' libfprint-2-2)"
+  elif have pacman && pacman -Q libfprint >/dev/null 2>&1; then
+    v="$(pacman -Q libfprint | awk '{print $2}')"
+  fi
+  [[ -n "$v" ]] && normalize_version "$v"
+}
+
+# True if the given library file already has this driver compiled in.
+lib_has_driver() {
+  [[ -r "$1" ]] && grep -aq 'elanmoc_0c4c' "$1"
+}
+
+# Look up the pinned upstream commit for a libfprint version.
+pinned_commit() {
+  awk -v v="$1" '/^#/ {next} $1==v {print $2; exit}' "$DATA_DIR/data/versions.tsv"
+}
+
+version_status() {
+  awk -v v="$1" '/^#/ {next} $1==v {print $3; exit}' "$DATA_DIR/data/versions.tsv"
+}
+
+# Verify driver sources against pinned checksums.
+verify_driver_files() {
+  ( cd "$DATA_DIR" && sha256sum --quiet -c data/SHA256SUMS ) \
+    || die "driver files do not match data/SHA256SUMS; refusing to build modified code"
+}
+
+# ------------------------------------------------------ source + building ----
+# Fetch libfprint $1 (version) into $2 (dir). Verifies the tag commit.
+fetch_source() {
+  local ver="$1" dest="$2" want got
+  want="$(pinned_commit "$ver")"
+  if [[ -z "$want" && "${ALLOW_UNPINNED:-0}" != 1 ]]; then
+    die "libfprint $ver is not in data/versions.tsv (tested versions only). Re-run with --allow-unpinned to build it anyway."
+  fi
+  info "cloning libfprint v$ver"
+  git clone --quiet --depth 1 --branch "v$ver" "$UPSTREAM_GIT" "$dest" \
+    || die "could not fetch libfprint v$ver from $UPSTREAM_GIT"
+  got="$(git -C "$dest" rev-parse HEAD)"
+  if [[ -n "$want" && "$got" != "$want" ]]; then
+    die "tag v$ver resolves to $got but $want is pinned; refusing (possible tampering)"
+  fi
+  [[ -z "$want" ]] && warn "building unpinned libfprint v$ver at $got"
+  return 0
+}
+
+# Copy the driver into a libfprint tree and register it with the build system.
+wire_driver() {
+  local src="$1" tmp
+  tmp="$(mktemp -d)"
+  cp -r "$DATA_DIR/driver" "$tmp/driver"
+  ( cd "$tmp" && patch -p1 --no-backup-if-mismatch -s < driver/patches/0001-protect-foreign-prints.patch ) \
+    || { rm -rf "$tmp"; die "safety patch does not apply to the vendored driver"; }
+  mkdir -p "$src/libfprint/drivers/elanmoc_0c4c"
+  cp "$tmp"/driver/elanmoc_0c4c/elanmoc_0c4c.[ch] "$src/libfprint/drivers/elanmoc_0c4c/"
+  rm -rf "$tmp"
+
+  # Register the driver with the build system. Two layouts exist (<=1.94.10
+  # uses plain lists, 1.94.100 uses dict-of-files). Meson requires Python, so
+  # python3 is always available. Fails loudly if neither layout matches.
+  python3 -I - "$src" <<'PYEOF2' || die "cannot register the driver: unsupported libfprint build layout"
+import re, sys
+src = sys.argv[1]
+
+def edit(path, fn):
+    text = open(path).read()
+    new = fn(text)
+    if new == text:
+        raise SystemExit("no registration point found in " + path)
+    open(path, "w").write(new)
+
+def sources(t):
+    # new layout:  'elanmoc' : files('drivers/elanmoc/elanmoc.c'),
+    n = re.sub(r"^(\s*)('elanmoc'\s*:\s*files\([^\n]*\),[^\n]*\n)",
+               lambda m: m.group(0) + m.group(1) +
+               "'elanmoc_0c4c' : files('drivers/elanmoc_0c4c/elanmoc_0c4c.c'),\n",
+               t, count=1, flags=re.M)
+    if n != t:
+        return n
+    # old layout:  'elanmoc' :\n        [ 'drivers/elanmoc/elanmoc.c' ],
+    return re.sub(r"^(\s*)('elanmoc'\s*:\s*\n\s*\[ 'drivers/elanmoc/elanmoc\.c' \],[^\n]*\n)",
+                  lambda m: m.group(0) + m.group(1) + "'elanmoc_0c4c' :\n" + m.group(1) +
+                  "    [ 'drivers/elanmoc_0c4c/elanmoc_0c4c.c' ],\n",
+                  t, count=1, flags=re.M)
+
+def top(t):
+    # new layout:  'elanmoc': {},
+    n = re.sub(r"^(\s*)('elanmoc'\s*:\s*\{\},[^\n]*\n)",
+               lambda m: m.group(0) + m.group(1) + "'elanmoc_0c4c': {},\n",
+               t, count=1, flags=re.M)
+    if n != t:
+        return n
+    # old layout: bare list entries  'elanmoc',
+    return re.sub(r"^(\s*)('elanmoc',[^\n]*\n)",
+                  lambda m: m.group(0) + m.group(1) + "'elanmoc_0c4c',\n",
+                  t, flags=re.M)
+
+edit(src + "/libfprint/meson.build", sources)
+edit(src + "/meson.build", top)
+PYEOF2
+  grep -q "elanmoc_0c4c" "$src/libfprint/meson.build" && grep -q "elanmoc_0c4c" "$src/meson.build" \
+    || die "failed to register the driver in the build files"
+}
+
+# Build libfprint $1 (version) with the driver, install into prefix $2.
+build_into() {
+  local ver="$1" prefix="$2" work src
+  local miss; miss="$(missing_tools)"
+  if [[ -n "$miss" ]]; then
+    fail "missing build tools: $miss"
+    info "install them with:"
+    info "$(deps_command)"
+    exit 1
+  fi
+  verify_driver_files
+  WORK_DIR="$(mktemp -d)"
+  work="$WORK_DIR"
+  src="$work/libfprint"
+  if [[ -n "${SOURCE_DIR:-}" ]]; then
+    cp -r "$SOURCE_DIR" "$src"
+    info "using local source $SOURCE_DIR"
+  else
+    fetch_source "$ver" "$src"
+  fi
+  wire_driver "$src"
+  info "configuring (prefix $prefix)"
+  # Only pass options this libfprint version defines (older releases lack some).
+  local -a opts=(-Ddrivers=all)
+  local o
+  for o in doc=false gtk-examples=false installed-tests=false udev_rules=disabled udev_hwdb=disabled; do
+    grep -qE "option\('${o%%=*}'" "$src/meson_options.txt" && opts+=("-D$o")
+  done
+  meson setup "$work/_b" "$src" --prefix="$prefix" --libdir=lib "${opts[@]}" \
+    >"$work/meson.log" 2>&1 \
+    || { tail -n 25 "$work/meson.log" >&2; die "meson configure failed"; }
+  info "compiling"
+  meson compile -C "$work/_b" >"$work/build.log" 2>&1 \
+    || { tail -n 25 "$work/build.log" >&2; die "build failed"; }
+  meson install -C "$work/_b" >"$work/install.log" 2>&1 \
+    || { tail -n 25 "$work/install.log" >&2; die "install into $prefix failed"; }
+  lib_has_driver "$prefix/lib/libfprint-2.so.2" || die "built library does not contain the driver"
+  ok "built libfprint $ver with the 04f3:0c4c driver into $prefix"
+}
+
+# --------------------------------------------------------------- commands ----
+cmd_doctor() {
+  local rc=0 ver lib pm miss
+  echo "$TOOL_NAME $TOOL_VERSION - environment check (read only)"
+  pm="$(detect_pm)"; info "package manager: $pm"
+
+  if device_present; then ok "sensor $USB_ID_VENDOR:$USB_ID_PRODUCT found on the USB bus"
+  else fail "sensor $USB_ID_VENDOR:$USB_ID_PRODUCT not found; this tool does not apply to your laptop"; rc=1; fi
+
+  ver="$(system_libfprint_version || true)"
+  if [[ -n "$ver" ]]; then ok "system libfprint version: $ver"
+  else warn "could not detect the libfprint version (is libfprint installed?). Use --libfprint-version"; rc=1; fi
+
+  lib="$(system_lib || true)"
+  if [[ -z "$lib" ]]; then warn "libfprint-2.so.2 not found in the linker cache"; rc=1
+  elif lib_has_driver "$lib"; then ok "system libfprint already contains the 0c4c driver - nothing to do"
+  else info "system libfprint has no 0c4c driver: $lib"; fi
+
+  if [[ -n "$ver" ]]; then
+    case "$(version_status "$ver")" in
+      hardware-tested) ok "libfprint $ver: tested on real hardware" ;;
+      build-tested)    warn "libfprint $ver: compiles, but has NOT been tested on hardware yet. Please report the result (docs/REPORTING.md)" ;;
+      *)               warn "libfprint $ver is not in data/versions.tsv; use --allow-unpinned at your own risk"; rc=1 ;;
+    esac
+  fi
+
+  if have fprintd || [[ -e /usr/libexec/fprintd || -e /usr/lib/fprintd/fprintd ]]; then ok "fprintd is installed"
+  else warn "fprintd not found; install it (and fprintd-pam) first"; rc=1; fi
+  if have systemctl && systemctl cat fprintd.service >/dev/null 2>&1; then ok "fprintd.service exists"
+  else warn "fprintd.service not found; this tool needs systemd"; rc=1; fi
+
+  miss="$(missing_tools)"
+  if [[ -z "$miss" ]]; then ok "build tools present"
+  else warn "missing build tools: $miss"; info "$(deps_command)"; rc=1; fi
+
+  if [[ -e "$CONF_FILE" ]]; then ok "installed (see: $TOOL_NAME status)"; fi
+  return $rc
+}
+
+cmd_status() {
+  if [[ -r "$CONF_FILE" ]]; then
+    echo "installed:"; sed 's/^/  /' "$CONF_FILE"
+    [[ -e "$DROPIN_FILE" ]] && ok "systemd drop-in present" || warn "drop-in missing: $DROPIN_FILE"
+  else
+    echo "not installed"
+  fi
+}
+
+# Exit 0 when up to date; 1 when libfprint changed since the build.
+cmd_check() {
+  [[ -r "$CONF_FILE" ]] || { [[ ${QUIET:-0} == 1 ]] || echo "not installed"; return 2; }
+  # shellcheck disable=SC1090
+  . "$CONF_FILE"
+  local now; now="$(system_libfprint_version || true)"
+  if [[ -n "$now" && "$now" != "${LIBFPRINT_VERSION:-}" ]]; then
+    warn "system libfprint is now $now but the patched build is ${LIBFPRINT_VERSION:-unknown}"
+    info "re-run: sudo $TOOL_NAME install"
+    return 1
+  fi
+  [[ ${QUIET:-0} == 1 ]] || ok "patched libfprint ${LIBFPRINT_VERSION} matches the system version"
+}
+
+selinux_label() {
+  local prefix="$1"
+  have getenforce || return 0
+  [[ "$(getenforce)" == Disabled ]] && return 0
+  info "SELinux is active: labelling $prefix/lib as lib_t"
+  if have semanage; then
+    semanage fcontext -a -t lib_t "$prefix/lib(/.*)?" 2>/dev/null \
+      || semanage fcontext -m -t lib_t "$prefix/lib(/.*)?"
+    restorecon -R "$prefix"
+  else
+    chcon -R -t lib_t "$prefix/lib"
+    warn "semanage not found; used chcon (label is lost on a full relabel). Install policycoreutils-python-utils for a permanent rule"
+  fi
+}
+
+selinux_unlabel() {
+  local prefix="$1"
+  have semanage && semanage fcontext -d "$prefix/lib(/.*)?" 2>/dev/null || true
+}
+
+# The prefix is deleted and recreated on install, so it must be a dedicated
+# directory, never a system location.
+validate_prefix() {
+  local p="$1"
+  case "$p" in
+    /|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/var|/var/*|/home|/home/*|/root|/root/*|/boot|/boot/*|/opt)
+      die "refusing prefix '$p': it must be a dedicated directory such as $PREFIX_DEFAULT" ;;
+    /*/*) ;;
+    *) die "refusing prefix '$p': it must be an absolute path with a dedicated final directory (e.g. $PREFIX_DEFAULT)" ;;
+  esac
+  [[ "$p" != *..* && "$p" != *[[:space:]]* ]] \
+    || die "refusing prefix '$p': no '..' or whitespace allowed"
+}
+
+cmd_install() {
+  need_root
+  device_present || [[ "${FORCE:-0}" == 1 ]] \
+    || die "sensor $USB_ID_VENDOR:$USB_ID_PRODUCT not present. Refusing (use --force to override)"
+  local ver="${LIBFPRINT_VERSION_OVERRIDE:-$(system_libfprint_version || true)}"
+  [[ -n "$ver" ]] || die "cannot detect the libfprint version; pass --libfprint-version X.Y.Z"
+  local lib; lib="$(system_lib || true)"
+  if [[ -n "$lib" ]] && lib_has_driver "$lib" && [[ "${FORCE:-0}" != 1 ]]; then
+    ok "system libfprint already supports this sensor; nothing to install"
+    return 0
+  fi
+  have systemctl || die "systemd is required"
+  systemctl cat fprintd.service >/dev/null 2>&1 || die "fprintd.service not found; install fprintd first"
+
+  local prefix="${PREFIX:-$PREFIX_DEFAULT}"
+  validate_prefix "$prefix"
+
+  if [[ "${DRY_RUN:-0}" == 1 ]]; then
+    ok "dry run: would build libfprint $ver into $prefix and write $DROPIN_FILE"
+    return 0
+  fi
+
+  rm -rf "${prefix:?}"
+  build_into "$ver" "$prefix"
+  selinux_label "$prefix"
+
+  mkdir -p "$DROPIN_DIR"
+  cat >"$DROPIN_FILE" <<EOF
+# Managed by $TOOL_NAME $TOOL_VERSION. Remove with: $TOOL_NAME uninstall
+[Service]
+Environment=LD_LIBRARY_PATH=$prefix/lib
+EOF
+  cat >"$CONF_FILE" <<EOF
+# written by $TOOL_NAME $TOOL_VERSION on $(date -u +%FT%TZ)
+PREFIX=$prefix
+LIBFPRINT_VERSION=$ver
+EOF
+  systemctl daemon-reload
+  systemctl restart fprintd.service
+  ok "fprintd restarted with the patched libfprint"
+  cat <<EOF
+
+Next steps (as your normal user):
+  fprintd-list \$USER
+  fprintd-enroll -f left-index-finger     # use a finger that is NOT enrolled in Windows
+  fprintd-verify
+
+See the README before enrolling: the chip is shared with Windows.
+EOF
+}
+
+cmd_uninstall() {
+  need_root
+  local prefix="$PREFIX_DEFAULT"
+  if [[ -r "$CONF_FILE" ]]; then
+    # shellcheck disable=SC1090
+    . "$CONF_FILE"; prefix="${PREFIX:-$PREFIX_DEFAULT}"
+  fi
+  validate_prefix "$prefix"   # never delete a path we would not have installed to
+  rm -f "$DROPIN_FILE"
+  rmdir "$DROPIN_DIR" 2>/dev/null || true
+  rm -f "$CONF_FILE"
+  selinux_unlabel "$prefix"
+  [[ "$prefix" == /opt/* ]] && rm -rf "${prefix:?}"
+  systemctl daemon-reload
+  systemctl restart fprintd.service 2>/dev/null || true
+  ok "removed. fprintd now uses the distribution's libfprint again."
+  info "Prints stored on the chip are untouched."
+}
+
+cmd_build() {
+  local ver="${LIBFPRINT_VERSION_OVERRIDE:-$(system_libfprint_version || true)}"
+  [[ -n "$ver" ]] || die "cannot detect the libfprint version; pass --libfprint-version X.Y.Z"
+  [[ -n "${DEST:-}" ]] || die "build needs --dest DIR (no system files are changed)"
+  mkdir -p "$DEST"
+  build_into "$ver" "$(readlink -f "$DEST")"
+}
+
+usage() {
+  cat <<EOF
+$TOOL_NAME $TOOL_VERSION - ELAN 04f3:0c4c fingerprint support for existing libfprint
+
+Usage: $TOOL_NAME <command> [options]
+
+Commands:
+  doctor      check this machine (read only, no root)
+  build       build a patched libfprint into --dest DIR (no system changes)
+  install     build into $PREFIX_DEFAULT and make fprintd use it (root)
+  uninstall   remove everything this tool installed (root)
+  status      show what is installed
+  check       exit 1 if the distribution's libfprint changed since the build
+
+Options:
+  --libfprint-version X.Y.Z   override detected version
+  --dest DIR                  output directory for 'build'
+  --source-dir DIR            use a local libfprint checkout instead of cloning
+  --prefix DIR                install location (default $PREFIX_DEFAULT)
+  --allow-unpinned            build versions not in data/versions.tsv
+  --force                     skip the device-present / already-supported checks
+  --dry-run                   install: report what would happen
+  --quiet                     check: no output
+  -h, --help
+EOF
+}
+
+main() {
+  local cmd="${1:-}"; [[ $# -gt 0 ]] && shift
+  while (($#)); do
+    case "$1" in
+      --libfprint-version) LIBFPRINT_VERSION_OVERRIDE="${2:?}"; shift 2 ;;
+      --dest) DEST="${2:?}"; shift 2 ;;
+      --source-dir) SOURCE_DIR="${2:?}"; shift 2 ;;
+      --prefix) PREFIX="${2:?}"; shift 2 ;;
+      --allow-unpinned) ALLOW_UNPINNED=1; shift ;;
+      --force) FORCE=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --quiet) QUIET=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  case "$cmd" in
+    doctor) cmd_doctor ;;
+    build) cmd_build ;;
+    install) cmd_install ;;
+    uninstall) cmd_uninstall ;;
+    status) cmd_status ;;
+    check) cmd_check ;;
+    -h|--help|help|"") usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

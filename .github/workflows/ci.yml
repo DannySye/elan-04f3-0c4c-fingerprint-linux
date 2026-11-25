@@ -1,0 +1,35 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: bash -n bin/fprint-elan-0c4c tests/run.sh
+      - run: shellcheck -S warning bin/fprint-elan-0c4c tests/run.sh
+      - run: ./tests/run.sh
+
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        libfprint: ["1.94.0", "1.94.5", "1.94.7", "1.94.9", "1.94.10", "1.94.100"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build dependencies (the apt list printed by the tool)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git patch build-essential meson ninja-build pkg-config \
+            libglib2.0-dev libgusb-dev libusb-1.0-0-dev libnss3-dev libpixman-1-dev libssl-dev \
+            libcairo2-dev libgirepository1.0-dev libgudev-1.0-dev
+      - name: build libfprint ${{ matrix.libfprint }} with the driver
+        run: ./bin/fprint-elan-0c4c build --libfprint-version ${{ matrix.libfprint }} --dest "$RUNNER_TEMP/out"
+      - name: the library contains the driver and the safety guards
+        run: |
+          lib="$RUNNER_TEMP/out/lib/libfprint-2.so.2"
+          grep -aq elanmoc_0c4c "$lib"
+          grep -aq 'not enrolled by libfprint' "$lib"
+          grep -aq FP_ELAN_0C4C_ALLOW_CLEAR "$lib"

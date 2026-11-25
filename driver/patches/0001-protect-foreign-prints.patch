@@ -1,0 +1,46 @@
+--- a/driver/elanmoc_0c4c/elanmoc_0c4c.c
++++ b/driver/elanmoc_0c4c/elanmoc_0c4c.c
+@@ -915,6 +915,23 @@
+   userid_buf[2] = user_id_len;
+   memcpy (userid_buf + 3, user_id, user_id_len);
+ 
++  /* Safety: only delete prints that libfprint itself enrolled. Prints made by
++   * other software (for example Windows Hello / the vendor's Windows driver)
++   * share the chip's 10 slots and must never be removed from here. fprintd
++   * tries to "garbage collect" an unknown on-device print before enrolling. */
++  if (user_id_safe == NULL || !g_str_has_prefix (user_id_safe, "FP1-"))
++    {
++      fp_warn ("Refusing to delete a print that was not enrolled by libfprint");
++      g_free (userid_buf);
++      fpi_device_delete_complete (
++        device,
++        fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
++                                  "Refusing to delete a print that was not "
++                                  "enrolled by libfprint (for example one "
++                                  "enrolled in Windows)"));
++      return;
++    }
++
+   fp_info ("Delete Finger, user_id = %s!", user_id_safe);
+   self->task_ssm =
+     fpi_ssm_new (device, elan_delete_run_state, DELETE_NUM_STATES);
+@@ -984,6 +1001,19 @@
+ {
+   FpiDeviceElanmoc0c4c *self = FPI_DEVICE_ELANMOC_0C4C (device);
+ 
++  /* Safety: this wipes every print on the chip, including ones enrolled by
++   * other operating systems. Require an explicit opt-in. */
++  if (g_strcmp0 (g_getenv ("FP_ELAN_0C4C_ALLOW_CLEAR"), "1") != 0)
++    {
++      fpi_device_clear_storage_complete (
++        device,
++        fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
++                                  "Clearing the sensor would erase prints "
++                                  "enrolled by other systems; set "
++                                  "FP_ELAN_0C4C_ALLOW_CLEAR=1 to allow it"));
++      return;
++    }
++
+   fp_info ("elanmoc clear_storage: wiping all enrolled fingers from sensor");
+   self->task_ssm =
+     fpi_ssm_new (device, elan_clear_storage_run_state, CLEAR_NUM_STATES);

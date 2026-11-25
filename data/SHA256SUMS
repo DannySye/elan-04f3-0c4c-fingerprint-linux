@@ -1,0 +1,3 @@
+b574ff22a6d4ca459c17356649d24da3cbc26089198db8c9501b155987aa6438  driver/elanmoc_0c4c/elanmoc_0c4c.c
+67dd27f6f80626e021ce0f0eb5c901ccdc50599fccab14b24404a560e7a4e865  driver/elanmoc_0c4c/elanmoc_0c4c.h
+03f93c92f0a41ca5780d4d9d093fd3bad55eb2b99f27d4a0d0f1cfa752caa844  driver/patches/0001-protect-foreign-prints.patch
